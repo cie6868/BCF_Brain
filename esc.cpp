@@ -10,7 +10,7 @@
 #include <math.h>
 #include <bcm2835.h>
 #include "I2Cdev.h"
-#include "MPU6050.h"
+#include "MPU6050_6Axis_MotionApps20.h"
 #include "BucketESC.h"
 #include "BucketControl.h"
 
@@ -19,9 +19,19 @@
 
 BucketControl control;
 
-MPU6050 gyro;
+MPU6050 mpu;
 BucketESC esc1(0x29);
 BucketESC esc0(0x2A);
+//BucketESC esc0(0x29);
+//BucketESC esc1(0x2A);
+
+uint16_t mpuPacketSize;
+uint16_t mpuFifoCount;
+uint8_t mpuFifoBuffer[64];
+uint8_t mpuIntStatus;
+Quaternion mpuRawData;
+VectorFloat mpuG;
+float mpuYPR[3];
 
 double gyroXOffset = -312;
 double gyroYOffset = -166;
@@ -66,10 +76,16 @@ int main(int argc, char **argv) {
 	// set control input handler after delay so server is already initialized
 	control.setOnDataHandlerFunc(onControlInput);
 
-	if (gyro.testConnection())
+	if (mpu.testConnection())
 		printf("Gyro connected\n");
 	else
 		fprintf(stderr, "Gyro missing\n");
+
+	/*uint8_t cur = gyro.getDLPFMode();
+	printf("Current DLPF mode is %d\n", cur);
+	gyro.setDLPFMode(MPU6050_DLPF_BW_5);
+	cur = gyro.getDLPFMode();
+	printf("New DLPF mode is %d\n", cur);*/
 
 	if (esc0.testConnection())
 		printf("ESC 0 connected\n");
@@ -81,8 +97,14 @@ int main(int argc, char **argv) {
 	else
 		fprintf(stderr, "ESC 1 missing\n");
 
-	gyro.initialize();
-	autoCalibrateGyro();
+	mpu.initialize();
+	if (mpu.dmpInitialize() == 0) {
+		mpu.setDMPEnabled(true);
+		mpuPacketSize = mpu.dmpGetFIFOPacketSize();
+	} else {
+		printf("DMP could not be initialized\n");
+	}
+	//autoCalibrateGyro();
 
 	printf("Setting both to 0 and waiting one second...\n");
 
@@ -91,7 +113,7 @@ int main(int argc, char **argv) {
 
 	bcm2835_delay(1000);
 
-	initGyro();
+	//initGyro();
 
 	printf("Looping...\n");
 	while (canLoop)
@@ -105,7 +127,7 @@ int main(int argc, char **argv) {
 	return 0;
 }
 
-void initGyro() {
+/*void initGyro() {
     gyro.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
 
     double roll = atan2(ay, az) * RAD_TO_DEG;
@@ -117,9 +139,9 @@ void initGyro() {
     clock_gettime(CLOCK_MONOTONIC_RAW, &gyroNowTime);
     double secs = (gyroNowTime.tv_sec) + round(gyroNowTime.tv_nsec / 1.0e9);
     gyroReadTime = secs;
-}
+}*/
 
-long acgCount = 0;
+/*long acgCount = 0;
 long acgXSum =0;
 long acgYSum = 0;
 void autoCalibrateGyro() {
@@ -139,7 +161,7 @@ void autoCalibrateGyro() {
 	gyroYOffset = acgYSum / acgCount;
 
 	printf("Calibrated gyro to X offset %.2f and Y offset %.2f\n", gyroXOffset, gyroYOffset);
-}
+}*/
 
 void onControlInput(const char* data) {
 	float input = 0.0;
@@ -147,16 +169,11 @@ void onControlInput(const char* data) {
 	thrust = (long)(input * 10000);	// limit whatis?
 }
 
-int lol = 0;
-int lel = 0;
-
-//const long thrust = -56250;
 const double kt = 3;
-const double kv = 300;
-//const long correctionLimit = 29000;
+const double kv = 400;
 
 void loop() {
-	getAndCalculateAngles();
+	/*getAndCalculateAngles();
 
 	double angleError = 0.0 - gyroCompAngleY;
 	double correction = angleError * kt;
@@ -164,34 +181,62 @@ void loop() {
 	double velocityDemand = correction;
 	double velocityError = velocityDemand - gyRate;
 
-	long realThrust = -30000; //thrust;
 	long thrust0 = realThrust - (velocityError * kv);
 	long thrust1 = realThrust + (velocityError * kv);
 	long power0 = calculatePower(thrust0);
 	long power1 = calculatePower(thrust1);
-	esc0.setThrottle(power0);
-	esc1.setThrottle(power1);
-	//esc0.setThrottle(thrust);
-	//esc1.setThrottle(thrust);
+	//esc0.setThrottle(realThrust);
+	//esc1.setThrottle(realThrust);*/
 
-	if (lel == 30) {
-		getRPM();
-	    printf("%d\t%0.2f\t%.0f\t%d\t%.0f\t%d\t%d\t%.1f\t%d\n", thrust, velocityError, rpm0, power0, rpm1, power1, gy, gyroCompAngleY, ay);
-		lel = 0;
+	while (mpuFifoCount < mpuPacketSize) {
+		mpuIntStatus = mpu.getIntStatus();
+		if ((mpuIntStatus & 0x10) || mpuFifoCount == 1024) {
+			mpu.resetFIFO();
+			printf("MPU FIFO overflowed!\n");
+		}
 
-		control.send(CONTROL_OUTPUT_ROLL, gyroCompAngleY);
+		mpuFifoCount = mpu.getFIFOCount();
+	}
+
+	mpu.getFIFOBytes(mpuFifoBuffer, mpuPacketSize);
+
+	mpuFifoCount -= mpuPacketSize;
+
+	mpu.dmpGetQuaternion(&mpuRawData, mpuFifoBuffer);
+	mpu.dmpGetGravity(&mpuG, &mpuRawData);
+	mpu.dmpGetYawPitchRoll(mpuYPR, &mpuRawData, &mpuG);
+
+	long realThrust = thrust;
+	esc0.setThrottle(0); //thrust);
+	esc1.setThrottle(thrust);
+
+	getRPM();
+	printf("yaw\t%.2f\tpitch\t%.2f\troll\t%.2f\n",
+		mpuYPR[0] * 180/M_PI,
+		mpuYPR[1] * 180/M_PI,
+		mpuYPR[2] * 180/M_PI
+	);
+
+	control.send(CONTROL_OUTPUT_ROLL, mpuYPR[1] * 180/M_PI);
+	control.send(CONTROL_OUTPUT_PITCH, mpuYPR[2] * 180/M_PI);
+	control.send(CONTROL_OUTPUT_RPM_0, rpm0);
+	control.send(CONTROL_OUTPUT_RPM_1, rpm1);
+
+		//printf("%d,%d,%d,%d,%.2f,%.2f\n", gx, gy, ax, ay, gyroCompAngleX, gyroCompAngleY);
+		//fflush(stdout);
+		//printf("gx %.0f\t angleX %.1f\t gy %.0f\t angleY %.1f\n", gx - gyroXOffset, gyroCompAngleX, gy - gyroYOffset, gyroCompAngleY);
+	    //printf("%d\t%0.2f\t%.0f\t%d\t%.0f\t%d\t%d\t%.1f\t%d\n", thrust, velocityError, rpm0, power0, rpm1, power1, gy, gyroCompAngleY, ay);
+
+		/*control.send(CONTROL_OUTPUT_ROLL, gyroCompAngleY);
 		control.send(CONTROL_OUTPUT_PITCH, gyroCompAngleX);
 		control.send(CONTROL_OUTPUT_THROTTLE_0, power0);
-		control.send(CONTROL_OUTPUT_THROTTLE_1, power1);
-	} else
-		lel++;
+		control.send(CONTROL_OUTPUT_THROTTLE_1, power1);*/
+	//} else
 
-	lol++;
-
-	bcm2835_delay(1);
+	//bcm2835_delay(1);
 }
 
-void getAndCalculateAngles() {
+/*void getAndCalculateAngles() {
     gyro.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
 
     clock_gettime(CLOCK_MONOTONIC_RAW, &gyroNowTime);
@@ -204,11 +249,11 @@ void getAndCalculateAngles() {
     gxRate = (gx - gyroXOffset) / RADS_TO_DEGS;
     gyRate = (gy - gyroYOffset) / RADS_TO_DEGS;
 
-    gyroCompAngleX = (0.99 * (gyroCompAngleX + (gxRate * period))) + (0.01 * roll);
-    gyroCompAngleY = (0.99 * (gyroCompAngleY + (gyRate * period * 0))) + (0.01 * pitch);
+    gyroCompAngleX = (0.999 * (gyroCompAngleX + (gxRate * period))) + (0.001 * roll);
+    gyroCompAngleY = (0.999 * (gyroCompAngleY + (gyRate * period))) + (0.001 * pitch);
 
     gyroReadTime = secs;
-}
+}*/
 
 const double lal = sqrt(1000);
 int calculatePower(int thrust) {

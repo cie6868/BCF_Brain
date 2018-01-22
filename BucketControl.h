@@ -3,8 +3,10 @@
 
 #define CONTROL_OUTPUT_ROLL			11
 #define CONTROL_OUTPUT_PITCH		12
-#define CONTROL_OUTPUT_THROTTLE_0	15
-#define CONTROL_OUTPUT_THROTTLE_1	16
+#define CONTROL_OUTPUT_THROTTLE_0	21
+#define CONTROL_OUTPUT_THROTTLE_1	22
+#define CONTROL_OUTPUT_RPM_0		31
+#define CONTROL_OUTPUT_RPM_1		32
 
 #include <thread>
 #include <seasocks/WebSocket.h>

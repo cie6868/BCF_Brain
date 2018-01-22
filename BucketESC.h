@@ -7,16 +7,6 @@
 	Refer http://docs.bluerobotics.com/bluesc/#i2c-protocol for I2C registers.
 */
 
-#ifdef __AVR__
-#include <avr/pgmspace.h>
-#else
-#define PROGMEM /* empty */
-#define pgm_read_byte(x) (*(x))
-#define pgm_read_word(x) (*(x))
-#define pgm_read_float(x) (*(x))
-#define PSTR(STR) STR
-#endif
-
 #define ESC_DEFAULT_ADDR			0x29
 #define ESC_ALIVE					0xAB
 
